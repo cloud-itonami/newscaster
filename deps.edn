@@ -1,11 +1,16 @@
 {:paths ["src"]
- :deps {io.github.com-junkawasaki/langgraph-clj
-        {:local/root "../../com-junkawasaki/langgraph-clj"}
+ ;; langchain/langgraph は kotoba-lang へ移管済み（旧 com-junkawasaki/*-clj は stale）
+ :deps {io.github.kotoba-lang/langgraph
+        {:local/root "../../kotoba-lang/langgraph"}
+        io.github.kotoba-lang/liquid-glass-ui
+        {:local/root "../../kotoba-lang/liquid-glass-ui"}   ; UI/UX skin (ADR-2607021130)
         org.clojure/data.json {:mvn/version "2.5.0"}}
  :aliases
  {:dev {:override-deps
-        {io.github.com-junkawasaki/langchain-clj
-         {:local/root "../../com-junkawasaki/langchain-clj"}}}
+        {io.github.kotoba-lang/langchain
+         {:local/root "../../kotoba-lang/langchain"}
+         io.github.kotoba-lang/shitsuke
+         {:local/root "../../kotoba-lang/shitsuke"}}}
   :run {:main-opts ["-m" "newscaster.sim"]
         :jvm-opts ["-Djava.awt.headless=true"]}
   :test {:extra-paths ["test"]

@@ -19,7 +19,8 @@
             [newscaster.channel :as channel]
             [newscaster.operation :as op]
             [newscaster.store :as store]
-            #?@(:clj [[newscaster.render :as render]
+            #?@(:clj [[newscaster.preview :as preview]
+                      [newscaster.render :as render]
                       [newscaster.tts :as tts]])))
 
 (defn- line [& xs] (println (apply str xs)))
@@ -121,4 +122,7 @@
                       :date "2026-07-02"} 3 true)
       (line "  DatomicStore rundown segments: "
             (mapv :segment (:rundown (store/episode ds "ep-d")))))
+
+    ;; ローカル確認プレビュー（liquid-glass-ui SSR、ADR-2607021130）
+    #?(:clj (line "\npreview: " (preview/write! st ep "out")))
     (line "\ndone.")))
