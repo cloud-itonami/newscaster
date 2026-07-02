@@ -10,25 +10,31 @@
     1. source-traceability — rundown/script が引用する article は全て store に
        ingest 済み（幻覚ニュースの構造的排除。cites ⊆ ingested）。
     2. rights-gate         — 引用 article の rightsPolicy が publish 可で無ければ
-       hold（A 層 news.policy と同じ語彙）。
-    3. disclosure          — publish proposal は :disclosure :ai-generated
+       hold（A 層 news.policy と同じ語彙 + social 投稿用の \"actor-original\"）。
+    3. actor-roster-gate   — :source-type \"social\" の article は channel
+       :social-roster に登録済みの :actor-did のみ引用可（app-aozora
+       アクターのなりすまし/未検証アカウント混入を排除、ADR-2607021400）。
+    4. disclosure          — publish proposal は :disclosure :ai-generated
        （合成メディア開示）を含む。
-    4. no-actuation        — proposal の effect は :proposal|:asset のみ。外部公開
+    5. no-actuation        — proposal の effect は :proposal|:asset のみ。外部公開
        （YouTube upload）は publish op の人間承認後に Publisher port だけが行う。
   SOFT:
-    5. Confidence floor → escalate.
-    6. :episode/publish は外部公開 = high-stakes → ALWAYS human approval."
+    6. Confidence floor → escalate.
+    7. :episode/publish は外部公開 = high-stakes → ALWAYS human approval."
   (:require [newscaster.store :as store]))
 
 (def confidence-floor 0.6)
 
-;; A 層 news.policy と同じ rightsPolicy 語彙（publish 可否のみ）。
+;; A 層 news.policy と同じ rightsPolicy 語彙（publish 可否のみ）+ app-aozora
+;; social 投稿用の "actor-original"（自組織アクターの一次投稿 = 著作権上の懸念
+;; なし。真正性は rights ではなく :social-roster 側で担保、下記 3）。
 (def rights-policy-table
   {"public-domain"   true
    "gov-open"        true
    "cc-by"           true
    "fair-use-quote"  true
    "original"        true
+   "actor-original"  true
    "transcript-only" false
    "broadcast"       false})
 
@@ -50,12 +56,17 @@
                    "、許可=" (allowed-effect op) "）")}]))
 
 (defn- citation-violations
-  "cites ⊆ ingested articles（幻覚ニュース排除）+ rights-gate。"
-  [st article-ids]
-  (let [missing (remove #(store/article st %) article-ids)
-        blocked (->> article-ids
-                     (keep #(store/article st %))
-                     (remove #(publish-allowed? (:rights-policy %)))
+  "cites ⊆ ingested articles（幻覚ニュース排除）+ rights-gate + social 投稿は
+  channel :social-roster に登録済みの :actor-did のみ引用可
+  （:unregistered-actor、なりすまし排除、ADR-2607021400）。"
+  [st ch article-ids]
+  (let [arts    (keep #(store/article st %) article-ids)
+        missing (remove #(store/article st %) article-ids)
+        blocked (->> arts (remove #(publish-allowed? (:rights-policy %))) (map :id))
+        roster  (set (keep :did (:social-roster ch)))
+        unreg   (->> arts
+                     (filter #(= "social" (:source-type %)))
+                     (remove #(contains? roster (:actor-did %)))
                      (map :id))]
     (cond-> []
       (seq missing)
@@ -63,21 +74,26 @@
              :detail (str "未 ingest の記事を引用: " (vec missing))})
       (seq blocked)
       (conj {:rule :rights-blocked
-             :detail (str "権利上使用不可の記事を引用: " (vec blocked))}))))
+             :detail (str "権利上使用不可の記事を引用: " (vec blocked))})
+      (seq unreg)
+      (conj {:rule :unregistered-actor
+             :detail (str "channel 未登録アクターの social post を引用: " (vec unreg))}))))
 
 (defn- rundown-violations [st {:keys [channel]} proposal]
-  (let [items (:rundown proposal)
+  (let [ch    (store/channel-of st channel)
+        items (:rundown proposal)
         cited (vec (mapcat :article-ids items))]
     (into
      (cond-> []
-       (nil? (store/channel-of st channel))
+       (nil? ch)
        (conj {:rule :no-channel :detail (str "未登録チャンネル " channel)})
        (empty? (filter (comp seq :article-ids) items))
        (conj {:rule :empty-rundown :detail "記事を引用する item が 1 つも無い"}))
-     (citation-violations st cited))))
+     (citation-violations st ch cited))))
 
 (defn- script-violations [st {:keys [episode]} proposal]
   (let [ep      (store/episode st episode)
+        ch      (store/channel-of st (:channel ep))
         rundown (:rundown ep)
         allowed (set (mapcat :article-ids rundown))
         segs    (:script proposal)
@@ -92,7 +108,7 @@
        (and (seq rundown) (seq stray))
        (conj {:rule :uncited-source
               :detail (str "rundown 外の記事を引用: " (vec stray))}))
-     (citation-violations st cited))))
+     (citation-violations st ch cited))))
 
 (defn- video-violations [st {:keys [episode]} proposal]
   (let [ep     (store/episode st episode)

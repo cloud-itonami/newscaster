@@ -17,6 +17,23 @@
       (is (every? #(gov/publish-allowed?
                     (:rights-policy (store/article st %))) (:cites p))))))
 
+(deftest fleet-pulse-sources-from-social-only
+  (testing "fleet-pulse（:style :social）は source-type social の記事だけから選ばれる（press プールと独立、ADR-2607021400）"
+    (let [st (store/seed-db)
+          _  (store/record-datom! st {:kind :article :id "post-robotaxi"
+                                      :value {:id "post-robotaxi" :title "t" :summary "s"
+                                              :source-name "robotaxi" :source-type "social"
+                                              :actor-did "did:web:aozora.gftd.ai:actor:robotaxi"
+                                              :rights-policy "actor-original" :priority 99}})
+          p  (advise (anchorllm/mock-advisor) st
+                     {:op :rundown/compose :episode "ep" :channel "ch-gftd-ai-news"})
+          fp (first (filter #(= :fleet-pulse (:segment %)) (:rundown p)))]
+      (is (= ["post-robotaxi"] (:article-ids fp)))
+      (is (not-any? #{"post-robotaxi"}
+                    (mapcat :article-ids
+                            (remove #(= :fleet-pulse (:segment %)) (:rundown p))))
+          "press 枠は social 記事を選ばない"))))
+
 (deftest careless-rundown-cites-blocked
   (testing "careless advisor は priority だけで選ぶ（governor が止める側）"
     (let [st (store/seed-db)

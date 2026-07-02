@@ -4,9 +4,12 @@
 
     channel   既定チャンネル「GFTD AI News」の編成表を表示
     ingest    A 層記事の観測（ground datom）
+    aozora    app-aozora actor social post の観測（ground datom、ADR-2607021400）
     careless  権利を知らない advisor の rundown → EditorialGovernor が HOLD
               （:rights-blocked — 封じ込めの実演）
-    rundown   anchor-LLM(mock) の編成 → commit
+    rogue     channel 未登録アクターの post を引用 → HOLD（:unregistered-actor —
+              なりすまし/未検証アカウント混入の封じ込め実演）
+    rundown   anchor-LLM(mock) の編成 → commit（press + fleet-pulse を含む）
     script    原稿生成 = 生成された AI ニュース本文 → commit
     video     render-spec → SlideRenderer（Java2D + ffmpeg）で実 mp4 を out/ に生成
     publish   常に interrupt → 人間の editorial sign-off → mock publisher で公開
@@ -18,6 +21,7 @@
             [newscaster.anchorllm :as anchorllm]
             [newscaster.channel :as channel]
             [newscaster.operation :as op]
+            [newscaster.ports :as ports]
             [newscaster.store :as store]
             #?@(:clj [[newscaster.preview :as preview]
                       [newscaster.render :as render]
@@ -73,6 +77,54 @@
                                :lang "ja" :published-at "2026-07-02"
                                :priority 83 :credibility 92}} 3 true)
     (line "  ingested articles: " (mapv :id (store/all-articles st)))
+
+    (line "\n── ingest（app-aozora actor social post の観測、ADR-2607021400）──")
+    (let [roster (:social-roster (store/channel-of st ch-id))
+          posts  [{:id "post-robotaxi-3xk9"
+                   :url "at://did:web:aozora.gftd.ai:actor:robotaxi/app.bsky.feed.post/3xk9"
+                   :title "本日のサービスエリアで自動運転実証、走行距離1200km突破…"
+                   :summary "本日のサービスエリアで自動運転実証、走行距離1200km突破。MRC 発動 0 件。"
+                   :source-id "did:web:aozora.gftd.ai:actor:robotaxi" :source-name "robotaxi"
+                   :source-type "social" :actor-did "did:web:aozora.gftd.ai:actor:robotaxi"
+                   :handle "robotaxi.aozora.gftd.ai" :rights-policy "actor-original"
+                   :lang "ja" :published-at "2026-07-02T09:00:00Z"
+                   :priority 60 :credibility 80}
+                  {:id "post-itonami-8p2q"
+                   :url "at://did:web:aozora.gftd.ai:actor:itonami/app.bsky.feed.post/8p2q"
+                   :title "今週の運用サマリ: cert 更新 4 件、CertGovernor hold 0 件…"
+                   :summary "今週の運用サマリ: cert 更新 4 件、CertGovernor hold 0 件。"
+                   :source-id "did:web:aozora.gftd.ai:actor:itonami" :source-name "itonami"
+                   :source-type "social" :actor-did "did:web:aozora.gftd.ai:actor:itonami"
+                   :handle "itonami.aozora.gftd.ai" :rights-policy "actor-original"
+                   :lang "ja" :published-at "2026-07-02T08:00:00Z"
+                   :priority 58 :credibility 80}]
+          feed   (ports/mock-social-feed posts)]
+      (doseq [p (ports/-fetch-posts feed {:roster roster})]
+        (drive actor (str "sp-" (:id p)) {:op :article/ingest :article (:id p) :value p} 3 true))
+      (line "  ingested social posts: "
+            (mapv :id (filter #(= "social" (:source-type %)) (store/all-articles st)))))
+
+    (line "\n── rundown/compose: channel 未登録アクターの post を引用 → EditorialGovernor が HOLD（:unregistered-actor）──")
+    (let [rogue {:id "post-rogue-zzz1"
+                 :url "at://did:web:evil.example:actor:rogue/app.bsky.feed.post/zzz1"
+                 :title "本物の robotaxi アクターを装った投稿"
+                 :summary "channel :social-roster に無いアカウントからの投稿。"
+                 :source-id "did:web:evil.example:actor:rogue" :source-name "rogue"
+                 :source-type "social" :actor-did "did:web:evil.example:actor:rogue"
+                 :handle "rogue.evil.example" :rights-policy "actor-original"
+                 :lang "ja" :published-at "2026-07-02T10:00:00Z"
+                 :priority 99 :credibility 10}
+          rogue-advisor
+          (reify anchorllm/Advisor
+            (-advise [_ _st _req]
+              {:rundown [{:segment :fleet-pulse :style :social :duration-s 20
+                          :article-ids [(:id rogue)]}]
+               :summary "x" :rationale "未登録アクターの投稿を無理に引用"
+               :cites [(:id rogue)] :effect :proposal :confidence 0.9}))]
+      (drive actor "ri" {:op :article/ingest :article (:id rogue) :value rogue} 3 true)
+      (drive (op/build st {:advisor rogue-advisor}) "r-rogue"
+             {:op :rundown/compose :episode "ep-rogue" :channel ch-id
+              :date "2026-07-02"} 3 true))
 
     (line "\n── rundown/compose: 権利を知らない advisor → EditorialGovernor が HOLD ──")
     (let [careless (op/build st {:advisor (anchorllm/careless-advisor)})]
