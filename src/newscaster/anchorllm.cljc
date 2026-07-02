@@ -25,28 +25,40 @@
 ;; ───────────────────────── deterministic mock ─────────────────────────
 
 (defn- ranked-articles
-  "priority 降順。rights-aware?=true のとき（標準 mock）は governor と同じ
-  rights-gate を鏡映して使用可能な記事だけを返す。false は権利を知らない
-  「素の知能」の振る舞い（careless-advisor。governor が止める側）。"
-  [st rights-aware?]
-  (->> (store/all-articles st)
-       (filter #(or (not rights-aware?) (gov/publish-allowed? (:rights-policy %))))
-       (sort-by :priority)
-       reverse
-       vec))
+  "priority 降順。kind は :press（source-type \"social\" 以外 = A 層記事）か
+  :social（app-aozora の GFTD アクター post、ADR-2607021400）で候補を分ける
+  — press 枠と fleet-pulse 枠が互いのプールを取り合わない。rights-aware?=true
+  のとき（標準 mock）は governor と同じ rights-gate + channel :social-roster
+  （actor-roster-gate）を鏡映して使用可能な記事だけを返す。false は権利/roster
+  を知らない「素の知能」の振る舞い（careless-advisor。governor が止める側）。"
+  [st rights-aware? kind ch]
+  (let [social? (fn [a] (= "social" (:source-type a)))
+        wants?  (if (= kind :social) social? (complement social?))
+        roster  (set (keep :did (:social-roster ch)))]
+    (->> (store/all-articles st)
+         (filter wants?)
+         (filter #(or (not rights-aware?) (gov/publish-allowed? (:rights-policy %))))
+         (filter #(or (not rights-aware?) (not (social? %))
+                      (contains? roster (:actor-did %))))
+         (sort-by :priority)
+         reverse
+         vec)))
 
 (defn- compose-rundown [st {:keys [channel] :as _req} rights-aware?]
-  (let [ch    (or (store/channel-of st channel) channel/default-channel)
-        slots (channel/story-slots ch)
-        arts  (ranked-articles st rights-aware?)
-        n     (count arts)
-        pick  (fn [i] (when (pos? n) (nth arts (min i (dec n)))))
-        ;; cold-open はトップ記事のティザー、:story が順に消費、:light は最後の記事
+  (let [ch      (or (store/channel-of st channel) channel/default-channel)
+        slots   (channel/story-slots ch)
+        press   (ranked-articles st rights-aware? :press ch)
+        social  (ranked-articles st rights-aware? :social ch)
+        n       (count press)
+        pick    (fn [i] (when (pos? n) (nth press (min i (dec n)))))
+        ;; cold-open はトップ press 記事のティザー、:story が順に消費、
+        ;; :light は最後の press 記事、:social は最新の fleet-pulse post
         items (loop [ss slots, i 0, acc []]
                 (if-let [{:keys [style] :as slot} (first ss)]
                   (let [a (case style
                             :headline (pick 0)
-                            :light    (peek arts)
+                            :light    (peek press)
+                            :social   (first social)
                             (pick i))]
                     (recur (rest ss) (if (= style :story) (inc i) i)
                            (conj acc (assoc slot :article-ids (if a [(:id a)] [])
@@ -55,12 +67,12 @@
         cites (vec (distinct (mapcat :article-ids items)))]
     {:rundown    (conj items {:segment :outro :style :credits :duration-s 15
                               :article-ids []})
-     :summary    (str "本日の編成: " (count cites) " 本の記事から "
+     :summary    (str "本日の編成: " (count cites) " 本の記事/投稿から "
                       (count items) " 枠")
-     :rationale  "priority 降順で編成表のスロットに割当"
+     :rationale  "priority 降順で編成表のスロットに割当（press/social は provenance ごとに独立プール）"
      :cites      cites
      :effect     :proposal
-     :confidence (if (>= (count arts) 2) 0.85 0.4)}))
+     :confidence (if (>= (+ (count press) (count social)) 2) 0.85 0.4)}))
 
 (defn- story-lines [a style]
   (case style
@@ -68,6 +80,8 @@
                (str "トップは「" (:title a) "」。")]
     :story    [(str "「" (:title a) "」— 出典: " (:source-name a) "。")
                (str (:summary a))]
+    :social   [(str "続いて、app-aozora より AI アクターたちの近況です。")
+               (str "@" (:handle a) "（" (:source-name a) "）: 「" (:summary a) "」")]
     :light    [(str "最後にもうひとつ。「" (:title a) "」。")
                (str (:summary a))]
     :credits  ["以上、GFTD AI News でした。出典はすべて概要欄に記載しています。"
@@ -87,6 +101,9 @@
                  (str "Our top story: " title ".")]
       :story    [(str title " — source: " (:source-name a) ".")
                  summary]
+      :social   ["Now, an update from our AI actors over on aozora."
+                 (str "@" (:handle a) " (" (:source-name a) ") posted: \""
+                     (or (:summary-en a) (:summary a)) "\"")]
       :light    [(str "And one more thing: " title ".")
                  summary]
       :credits  ["That's all from GFTD AI News. All sources are listed below."

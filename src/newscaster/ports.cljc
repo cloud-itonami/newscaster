@@ -1,7 +1,12 @@
 (ns newscaster.ports
   "注入境界（swap）— actor コアが依存する外界は全て protocol port:
 
-    NewsFeed  — A 層（ai-gftd-news）からの記事取得。mock ‖ kotoba XRPC。
+    NewsFeed   — A 層（ai-gftd-news）からの記事取得。mock ‖ kotoba XRPC。
+    SocialFeed — app-aozora（yoro AppView）上の GFTD AI アクター群の social
+                post 取得。mock ‖ newscaster.aozora（yoro XRPC
+                getAuthorFeed、ADR-2607021400）。取得は channel
+                :social-roster 登録アクターに限定し、governor
+                :unregistered-actor が独立に再検査する（なりすまし排除）。
     Narrator  — セグメント原稿 → ナレーション音声。mock（nil = 無音）‖
                 newscaster.tts（open-weight TTS gateway: TADA / Kokoro、
                 ADR-2607021030）。
@@ -11,10 +16,19 @@
     Publisher — 承認済み episode の外部公開。mock ‖ newscaster.youtube
                 （YouTube Data API v3）。**publish op の人間承認後にのみ呼ばれる。**
 
+  NewsFeed / SocialFeed はいずれも article-shaped ground datom
+  （newscaster.store の :article）へ写像した結果を返す — governor/anchorllm は
+  provenance（press ‖ social）に関わらず同じ契約で扱う。
+
   mock はすべて決定的・IO 無しで、contract test と demo を offline で回す。")
 
 (defprotocol NewsFeed
   (-fetch-articles [feed opts] "→ [article ..]（A 層 article の写像）"))
+
+(defprotocol SocialFeed
+  (-fetch-posts [feed opts]
+    "opts: {:roster [{:did ..} ..] :limit n} → [article ..]（app-aozora post
+    の article-shaped 写像。:source-type \"social\"）"))
 
 (defprotocol Narrator
   (-narrate [narrator channel segment lang]
@@ -34,6 +48,12 @@
   "固定の記事列を返す NewsFeed。"
   [articles]
   (reify NewsFeed (-fetch-articles [_ _opts] (vec articles))))
+
+(defn mock-social-feed
+  "固定の post 列（article-shaped 写像済み）を返す SocialFeed。roster/limit は
+  無視する — 決定的な offline demo/test 用。"
+  [posts]
+  (reify SocialFeed (-fetch-posts [_ _opts] (vec posts))))
 
 (defn mock-narrator
   "音声なし（nil）— 無音の従来挙動。"

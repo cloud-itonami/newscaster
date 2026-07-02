@@ -60,6 +60,46 @@
       (is (= :hold (get-in res [:state :disposition])))
       (is (some #{:uncited-source} (-> (store/ledger s) last :basis))))))
 
+(deftest unregistered-actor-post-is-held
+  (testing "channel :social-roster に無い actor-did の social post を引用 → hold（なりすまし排除、ADR-2607021400）"
+    (let [rogue {:id "post-rogue" :title "t" :summary "s" :url "at://did:web:evil.example/x"
+                :source-name "rogue" :source-type "social"
+                :actor-did "did:web:evil.example:actor:rogue"
+                :rights-policy "actor-original" :priority 99}
+          bad (reify anchorllm/Advisor
+                (-advise [_ _ _]
+                  {:rundown [{:segment :fleet-pulse :style :social :duration-s 20
+                              :article-ids ["post-rogue"]}]
+                   :summary "x" :rationale "x" :cites ["post-rogue"]
+                   :effect :proposal :confidence 0.9}))
+          [s actor] (fresh {:advisor bad})]
+      (run actor "ri" {:op :article/ingest :article "post-rogue" :value rogue} 3)
+      (let [res (run actor "ru" {:op :rundown/compose :episode "ep-t"
+                                 :channel "ch-gftd-ai-news" :date "2026-07-02"} 3)]
+        (is (= :hold (get-in res [:state :disposition])))
+        (is (some #{:unregistered-actor} (-> (store/ledger s) last :basis)))))))
+
+(deftest registered-actor-post-is-citable
+  (testing "channel :social-roster 登録済みの actor-did の social post は引用可"
+    (let [post {:id "post-robotaxi" :title "t" :summary "s"
+               :url "at://did:web:aozora.gftd.ai:actor:robotaxi/x"
+               :source-name "robotaxi" :source-type "social"
+               :actor-did "did:web:aozora.gftd.ai:actor:robotaxi"
+               :rights-policy "actor-original" :priority 99}
+          ok (reify anchorllm/Advisor
+               (-advise [_ _ _]
+                 {:rundown [{:segment :fleet-pulse :style :social :duration-s 20
+                             :article-ids ["post-robotaxi"]}]
+                  :summary "x" :rationale "x" :cites ["post-robotaxi"]
+                  :effect :proposal :confidence 0.9}))
+          [s actor] (fresh {:advisor ok})]
+      (run actor "ri" {:op :article/ingest :article "post-robotaxi" :value post} 3)
+      (let [res (run actor "ru" {:op :rundown/compose :episode "ep-t2"
+                                 :channel "ch-gftd-ai-news" :date "2026-07-02"} 3)]
+        (is (= :commit (get-in res [:state :disposition])))
+        (is (= ["post-robotaxi"]
+               (get-in (store/episode s "ep-t2") [:rundown 0 :article-ids])))))))
+
 (deftest script-without-rundown-is-held
   (let [[s actor] (fresh)
         res (run actor "sr" {:op :script/draft :episode "ep-none"} 3)]

@@ -3,7 +3,9 @@
 AI ニュースチャンネル（設計=data）→ ニュース生成（rundown/原稿）→ 動画レンダ →
 YouTube 公開を扱う B 層 actor。robotaxi（AR1⊣SafetyGovernor）/ talent（HR-LLM⊣
 PolicyGovernor）/ itonami（ops-LLM⊣CertGovernor）と同型に
-**anchor-LLM⊣EditorialGovernor（放送考査）** を据える。ADR-2607020910。
+**anchor-LLM⊣EditorialGovernor（放送考査）** を据える。ADR-2607020910。ingest
+source は A 層記事（ai-gftd-news）に加え、app-aozora 上の GFTD AI アクター群の
+social post（ADR-2607021400、fleet-pulse セグメント）。
 
 ## 1. 二つのフロー
 
@@ -13,7 +15,11 @@ produce(produce-op): intake → advise → govern → decide → commit | hold |
 ```
 
 - **ingest**: `:article/ingest`（A 層 art-* の写像。url/source/rightsPolicy/score
-  ごと）、`:channel/register`、`:asset/record`。LLM/governor/phase を通らない事実記録。
+  ごと、**または** app-aozora actor social post の写像 — `source-type
+  "social"`、`newscaster.aozora/post->article`、ADR-2607021400）、
+  `:channel/register`、`:asset/record`。LLM/governor/phase を通らない事実記録。
+  press/social は **同じ article-shaped ground datom** に統一されるので op も
+  store schema も分岐しない。
 - **produce**: `:rundown/compose` → `:script/draft` → `:video/produce` →
   `:episode/publish`。anchor-LLM 提案 → EditorialGovernor 考査 → phase gate →
   publish は必ず人間（`interrupt-before`）。commit ノードだけが Renderer /
@@ -31,10 +37,13 @@ produce(produce-op): intake → advise → govern → decide → commit | hold |
   governor を鏡映）‖ `careless-advisor`（権利を知らない素の知能 — governor が
   止める側のデモ/テスト用）‖ `llm-advisor`（langchain.model）。破損応答は
   confidence0 noop → governor が hold。
-- **Renderer / Publisher / NewsFeed**（`newscaster.ports`）: mock は決定的・IO 無し。
-  live は `newscaster.render`（Java2D news-card + ffmpeg。kami-engine の今日動く
-  2D 経路 = kami.mangaka.page caption-box の 16:9 版）と `newscaster.youtube`
-  （Data API v3、承認後のみ）。
+- **Renderer / Publisher / NewsFeed / SocialFeed**（`newscaster.ports`）: mock は
+  決定的・IO 無し。live は `newscaster.render`（Java2D news-card + ffmpeg。
+  kami-engine の今日動く 2D 経路 = kami.mangaka.page caption-box の 16:9 版）と
+  `newscaster.youtube`（Data API v3、承認後のみ）。SocialFeed の live は
+  `newscaster.aozora/http-social-feed`（app-aozora yoro AppView XRPC
+  `getAuthorFeed`、channel `:social-roster` の各アクターのみ取得、
+  ADR-2607021400）。
 - **Phase**（context `:phase 0..3`）: 生成の自律度のみ段階化。publish は常に人間。
 
 ## 3. EditorialGovernor（独立・放送考査）
@@ -45,6 +54,7 @@ HARD（人間でも上書き不可）:
 |---|---|
 | `:uncited-source` | ingest 済みでない記事の引用（幻覚ニュース）/ rundown 外の引用 |
 | `:rights-blocked` | rightsPolicy が publish 不可（broadcast/transcript-only/unknown） |
+| `:unregistered-actor` | social 投稿（`source-type "social"`）の `:actor-did` が channel `:social-roster` に未登録（app-aozora アクターのなりすまし排除、ADR-2607021400） |
 | `:missing-disclosure` | publish-meta に `:disclosure :ai-generated` が無い |
 | `:no-actuation` | effect が :proposal/:asset 以外（直接公開の試み） |
 | `:voice-consent` | channel 未登録 voice でのナレーション（無断クローン排除、ADR-2607021030） |
@@ -70,6 +80,9 @@ ground datoms（article/channel/episode/asset）が canonical。append-only の
 ```
 ai-gftd-news (A層)     …一次収集。art-* datom graph・score・rightsPolicy
       │ NewsFeed port（写像 ingest）
+app-aozora (yoro AppView)  …GFTD AI アクター群の social post
+      │ SocialFeed port（post→article 写像 ingest、:social-roster 限定）
+      │ ADR-2607021400
 ai-gftd-newscaster (B層・本 repo)
       │ Narrator port（ADR-2607021030）
       ├─ scripts/tts_server.py … open-weight TTS gateway（POST /tts → WAV）
