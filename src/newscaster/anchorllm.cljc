@@ -1,0 +1,206 @@
+(ns newscaster.anchorllm
+  "anchor-LLM — the contained intelligence node. It composes the AI news
+  channel's rundown（編成）, drafts the anchor script（原稿 = 生成される AI
+  ニュース本文）, derives the render-spec and the publish metadata, and returns
+  a PROPOSAL — never a committed episode and never an external post. Every
+  output is censored by `newscaster.governor` before anything is recorded, and
+  a publish proposal always routes to a human editor.
+
+  Advisor is injected (mock | real LLM via langchain.model), same as
+  robotaxi.ar1 / talent.hrllm / itonami.opsllm.
+
+  Proposal shape (op-specific payload + common keys):
+    {:rundown [...]|:script [...]|:render-spec {...}|:publish-meta {...}
+     :summary str :rationale str :cites [article-id ..]
+     :effect :proposal|:asset   ; publish/compose/draft は :proposal、render は :asset
+     :confidence 0..1}"
+  (:require #?(:clj  [clojure.edn :as edn]
+               :cljs [cljs.reader :as edn])
+            [clojure.string :as str]
+            [langchain.model :as model]
+            [newscaster.channel :as channel]
+            [newscaster.governor :as gov]
+            [newscaster.store :as store]))
+
+;; ───────────────────────── deterministic mock ─────────────────────────
+
+(defn- ranked-articles
+  "priority 降順。rights-aware?=true のとき（標準 mock）は governor と同じ
+  rights-gate を鏡映して使用可能な記事だけを返す。false は権利を知らない
+  「素の知能」の振る舞い（careless-advisor。governor が止める側）。"
+  [st rights-aware?]
+  (->> (store/all-articles st)
+       (filter #(or (not rights-aware?) (gov/publish-allowed? (:rights-policy %))))
+       (sort-by :priority)
+       reverse
+       vec))
+
+(defn- compose-rundown [st {:keys [channel] :as _req} rights-aware?]
+  (let [ch    (or (store/channel-of st channel) channel/default-channel)
+        slots (channel/story-slots ch)
+        arts  (ranked-articles st rights-aware?)
+        n     (count arts)
+        pick  (fn [i] (when (pos? n) (nth arts (min i (dec n)))))
+        ;; cold-open はトップ記事のティザー、:story が順に消費、:light は最後の記事
+        items (loop [ss slots, i 0, acc []]
+                (if-let [{:keys [style] :as slot} (first ss)]
+                  (let [a (case style
+                            :headline (pick 0)
+                            :light    (peek arts)
+                            (pick i))]
+                    (recur (rest ss) (if (= style :story) (inc i) i)
+                           (conj acc (assoc slot :article-ids (if a [(:id a)] [])
+                                            :angle (:title a)))))
+                  acc))
+        cites (vec (distinct (mapcat :article-ids items)))]
+    {:rundown    (conj items {:segment :outro :style :credits :duration-s 15
+                              :article-ids []})
+     :summary    (str "本日の編成: " (count cites) " 本の記事から "
+                      (count items) " 枠")
+     :rationale  "priority 降順で編成表のスロットに割当"
+     :cites      cites
+     :effect     :proposal
+     :confidence (if (>= (count arts) 2) 0.85 0.4)}))
+
+(defn- story-lines [a style]
+  (case style
+    :headline [(str "こんばんは。GFTD AI News、今日の AI ニュースです。")
+               (str "トップは「" (:title a) "」。")]
+    :story    [(str "「" (:title a) "」— 出典: " (:source-name a) "。")
+               (str (:summary a))]
+    :light    [(str "最後にもうひとつ。「" (:title a) "」。")
+               (str (:summary a))]
+    :credits  ["以上、GFTD AI News でした。出典はすべて概要欄に記載しています。"
+               "この番組は AI が生成しています。"]
+    [(str (:title a))]))
+
+(defn- draft-script [st {:keys [episode] :as _req}]
+  (let [ep      (store/episode st episode)
+        rundown (:rundown ep)
+        segs    (vec (for [{:keys [segment style duration-s article-ids]} rundown
+                           :let [a (some #(store/article st %) article-ids)]]
+                       {:segment     segment
+                        :duration-s  duration-s
+                        :article-ids (vec article-ids)
+                        :lines       (story-lines a style)
+                        :caption     (if a
+                                       (str "出典: " (:source-name a) " — " (:url a))
+                                       "GFTD AI News — AI が生成した番組です")}))
+        cites   (vec (distinct (mapcat :article-ids segs)))]
+    {:script     segs
+     :summary    (str episode " 原稿: " (count segs) " セグメント")
+     :rationale  "committed rundown の各 item を、出典を読み上げる原稿に展開"
+     :cites      cites
+     :effect     :proposal
+     :confidence (if (seq rundown) 0.85 0.3)}))
+
+(defn- produce-render-spec [st {:keys [episode] :as _req}]
+  (let [ep     (store/episode st episode)
+        ch     (or (store/channel-of st (:channel ep)) channel/default-channel)
+        visual (:visual ch)]
+    {:render-spec {:resolution (:resolution visual)
+                   :fps        (:fps visual)
+                   :backdrop   (:backdrop visual)
+                   :accent     (:accent visual)
+                   :brand      (:title ch)
+                   :date       (:date ep)
+                   :segments   (vec (for [s (:script ep)]
+                                      (select-keys s [:segment :duration-s :lines
+                                                      :caption :article-ids])))}
+     :summary    (str episode " render-spec: " (count (:script ep)) " セグメント")
+     :rationale  "channel visual + committed script から導出"
+     :cites      (vec (distinct (mapcat :article-ids (:script ep))))
+     :effect     :asset
+     :confidence (if (seq (:script ep)) 0.8 0.3)}))
+
+(defn- publish-meta [st {:keys [episode] :as _req}]
+  (let [ep    (store/episode st episode)
+        ch    (or (store/channel-of st (:channel ep)) channel/default-channel)
+        arts  (keep #(store/article st %)
+                    (distinct (mapcat :article-ids (:script ep))))
+        yt    (:youtube ch)]
+    {:publish-meta {:title       (str (:title ch) " — " (:date ep))
+                    :description (str (:description ch) "\n\n出典:\n"
+                                      (str/join "\n" (map #(str "- " (:title %) " / "
+                                                                (:source-name %) " " (:url %))
+                                                          arts))
+                                      "\n\nこの動画は AI によって生成されています。")
+                    :tags        (:tags yt)
+                    :category-id (:category-id yt)
+                    :visibility  (:visibility yt)
+                    :made-for-kids false
+                    :disclosure  :ai-generated}
+     :summary    (str episode " を公開申請（" (count arts) " 出典）")
+     :rationale  "channel の YouTube 既定メタ + episode の出典一覧から導出"
+     :cites      (mapv :id arts)
+     :effect     :proposal
+     :confidence (if (:video ep) 0.9 0.3)}))
+
+(defn infer [st {:keys [op] :as req} rights-aware?]
+  (case op
+    :rundown/compose (compose-rundown st req rights-aware?)
+    :script/draft    (draft-script st req)
+    :video/produce   (produce-render-spec st req)
+    :episode/publish (publish-meta st req)
+    {:summary "未対応" :rationale (str op) :cites [] :effect :noop :confidence 0.0}))
+
+;; ───────────────────────── Advisor protocol ─────────────────────────
+
+(defprotocol Advisor
+  (-advise [advisor store request]))
+
+(defn mock-advisor
+  "決定的 mock。governor が検査する不変条件（rights-gate 等）を鏡映するので、
+  クリーンな store からはクリーンな proposal が出る。"
+  [] (reify Advisor (-advise [_ st req] (infer st req true))))
+
+(defn careless-advisor
+  "権利を知らない素の知能ノード（priority だけで記事を選ぶ）。封じ込めのデモ/
+  テスト用 — EditorialGovernor が :rights-blocked で hold する側。"
+  [] (reify Advisor (-advise [_ st req] (infer st req false))))
+
+(def ^:private system-prompt
+  (str "あなたは AI ニュースチャンネルのアンカー兼編成者です。与えられた事実"
+       "（ingest 済み記事・チャンネル設計・episode 状態）のみに基づき、提案を 1 つ"
+       " EDN マップで返します。EDN だけを出力。\n"
+       "共通キー: :summary :rationale :cites(引用した記事 id) :effect :confidence(0..1)。\n"
+       "op ごとの payload: :rundown/compose→:rundown、:script/draft→:script、"
+       ":video/produce→:render-spec、:episode/publish→:publish-meta"
+       "（:disclosure :ai-generated を必ず含める）。\n"
+       "重要: ingest 済みでない記事を引用しない。直接の外部公開は提案しない"
+       "（effect は :proposal か :asset。公開は人間の承認後に行われる）。"))
+
+(defn- facts-for [st {:keys [episode channel]}]
+  {:channel  (store/channel-of st (or channel (:channel (store/episode st episode))))
+   :episode  (store/episode st episode)
+   :articles (store/all-articles st)})
+
+(defn- parse-proposal [content]
+  (let [p (try (edn/read-string (str/trim (str content)))
+               (catch #?(:clj Exception :cljs :default) _ nil))]
+    (if (map? p)
+      (-> p (update :cites #(vec (or % [])))
+            (update :confidence #(if (number? %) (double %) 0.0))
+            (update :effect #(or % :noop)))
+      {:summary "LLM応答を解釈できません" :rationale (str content)
+       :cites [] :effect :noop :confidence 0.0})))
+
+(defn llm-advisor
+  "Advisor backed by a langchain.model/ChatModel (Anthropic / OpenAI-compatible
+  / mock-model). Output is parsed defensively → an unparseable response is a
+  confidence-0 noop the governor will hold/escalate."
+  ([chat-model] (llm-advisor chat-model {}))
+  ([chat-model gen-opts]
+   (reify Advisor
+     (-advise [_ st req]
+       (let [resp (model/-generate chat-model
+                    [{:role :system :content system-prompt}
+                     {:role :user :content (str "操作:" (:op req) " episode:" (:episode req)
+                                                "\n事実:" (pr-str (facts-for st req)))}]
+                    gen-opts)]
+         (parse-proposal (:content resp)))))))
+
+(defn trace [request proposal]
+  {:t :anchor-proposal :op (:op request) :episode (:episode request)
+   :summary (:summary proposal) :rationale (:rationale proposal)
+   :cites (:cites proposal) :confidence (:confidence proposal)})
