@@ -40,6 +40,47 @@
     (is (some #(re-find #"AI が生成" (apply str (:lines %))) (:script p))
         "on-air disclosure is part of the script")))
 
+(deftest script-carries-i18n-locales
+  (testing "追加言語（en）は :i18n locale map、cites は構造的に共有"
+    (let [st (store/seed-db)
+          _  (store/record-datom! st {:kind :episode :id "ep"
+                                      :value {:id "ep" :channel "ch-gftd-ai-news"
+                                              :date "2026-07-02"
+                                              :rundown [{:segment :top-stories
+                                                         :style :story :duration-s 45
+                                                         :article-ids ["art-eu-ai-act"]}]}})
+          p  (advise (anchorllm/mock-advisor) st {:op :script/draft :episode "ep"})
+          seg (first (:script p))]
+      (is (seq (get-in seg [:i18n "en" :lines])))
+      (is (re-find #"source: European Commission"
+                   (apply str (get-in seg [:i18n "en" :lines]))))
+      ;; article-ids はセグメント構造側にのみある = locale 間ですり替わらない
+      (is (nil? (get-in seg [:i18n "en" :article-ids]))))))
+
+(deftest render-spec-localizes-and-picks-registered-voice
+  (let [st (store/seed-db)
+        _  (store/record-datom! st {:kind :episode :id "ep"
+                                    :value {:id "ep" :channel "ch-gftd-ai-news"
+                                            :date "2026-07-02"
+                                            :script [{:segment :top-stories
+                                                      :duration-s 45
+                                                      :article-ids ["art-eu-ai-act"]
+                                                      :lines ["日本語行"]
+                                                      :caption "出典: X"
+                                                      :i18n {"en" {:lines ["English line"]
+                                                                   :caption "Source: X"}}}]}})
+        pj (advise (anchorllm/mock-advisor) st {:op :video/produce :episode "ep"})
+        pe (advise (anchorllm/mock-advisor) st {:op :video/produce :episode "ep"
+                                                :lang "en"})]
+    (is (= "ja" (get-in pj [:render-spec :lang])))
+    (is (= "jf_alpha" (get-in pj [:render-spec :narration :voice])))
+    (is (= ["日本語行"] (-> pj :render-spec :segments first :lines)))
+    (is (= "en" (get-in pe [:render-spec :lang])))
+    (is (= "af_heart" (get-in pe [:render-spec :narration :voice])))
+    (is (= ["English line"] (-> pe :render-spec :segments first :lines)))
+    (is (= ["art-eu-ai-act"] (-> pe :render-spec :segments first :article-ids))
+        "localize しても cites は保持")))
+
 (deftest publish-meta-includes-disclosure-and-sources
   (let [st (store/seed-db)
         _  (store/record-datom! st {:kind :episode :id "ep"

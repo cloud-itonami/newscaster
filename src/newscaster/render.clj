@@ -158,19 +158,32 @@
     (zero? (.waitFor p))))
 
 (defn- mux!
-  "slide PNG 列（各 duration 秒）→ mp4。concat demuxer の静止画 duration は
-  ffmpeg のバージョンで挙動が揺れるので、セグメント毎に -loop 1 -t で正確に
-  エンコードしてから stream copy で連結する。成功時 path、失敗 nil。"
+  "slide PNG 列（各 duration 秒、任意で per-seg ナレーション WAV）→ mp4。
+  concat demuxer の静止画 duration は ffmpeg のバージョンで挙動が揺れるので、
+  セグメント毎に -loop 1 -t で正確にエンコードしてから stream copy で連結する。
+  音声は aac 48kHz stereo に正規化（無音セグメントは anullsrc）し、apad で尺まで
+  埋める — 全セグメントの codec が揃うので -c copy concat が成立する。
+  成功時 path、失敗 nil。"
   [^File dir frames fps out-name]
   (when-let [ffmpeg (ffmpeg-bin)]
     (let [segs (vec (map-indexed
-                     (fn [i {:keys [path duration-s]}]
-                       (let [seg (io/file dir (format "seg-%02d.mp4" i))]
+                     (fn [i {:keys [path duration-s audio-path]}]
+                       (let [seg (io/file dir (format "seg-%02d.mp4" i))
+                             audio-in (if audio-path
+                                        ["-i" audio-path]
+                                        ["-f" "lavfi" "-i"
+                                         "anullsrc=r=48000:cl=stereo"])]
                          (when (run-ffmpeg ffmpeg
-                                           ["-y" "-loop" "1" "-framerate" fps
-                                            "-i" path "-t" duration-s
-                                            "-c:v" "libx264" "-tune" "stillimage"
-                                            "-pix_fmt" "yuv420p" (.getPath seg)])
+                                           (concat
+                                            ["-y" "-loop" "1" "-framerate" fps
+                                             "-i" path]
+                                            audio-in
+                                            ["-t" duration-s
+                                             "-af" "apad"
+                                             "-c:v" "libx264" "-tune" "stillimage"
+                                             "-pix_fmt" "yuv420p"
+                                             "-c:a" "aac" "-ar" "48000" "-ac" "2"
+                                             (.getPath seg)]))
                            seg)))
                      frames))]
       (when (every? some? segs)
@@ -199,15 +212,29 @@
     :outro          "CREDITS"
     (str/upper-case (name segment))))
 
+(def ^:private min-segment-s 3.0)
+
+(defn- narrated-duration
+  "音声実尺が尺を決める（+0.5s 余白、下限 3s）。音声なしは編成表の尺のまま。"
+  [audio duration-s]
+  (if-let [d (:duration-s audio)]
+    (max min-segment-s (+ (double d) 0.5))
+    (or duration-s 10)))
+
 (defn render-episode!
-  "render-spec を実行して out-dir/<episode-id>/ に PNG 列 + episode.mp4 を書く。
-  → {:video {:cid :path} :thumbnail {:cid :path} :frames [..]}（ffmpeg 不在時は
-  :video nil = commit 側が hold する正直な失敗）。"
-  [channel episode {:keys [resolution fps accent brand date segments] :as spec}
-   out-dir]
+  "render-spec を実行して out-dir/<episode-id>/[<lang>/] に PNG 列 + ナレーション
+  WAV（narrator があれば）+ episode.mp4 を書く。
+  → {:video {:cid :path} :thumbnail {:cid :path} :frames [..] :narration {..}}
+  （ffmpeg 不在時は :video nil = commit 側が hold する正直な失敗）。"
+  [channel episode {:keys [resolution fps accent brand date lang segments] :as spec}
+   out-dir & [narrator]]
   (let [[w h] (or resolution [1280 720])
-        dir   (doto (io/file out-dir (str (:id episode))) (.mkdirs))
+        dir   (doto (if lang
+                      (io/file out-dir (str (:id episode)) lang)
+                      (io/file out-dir (str (:id episode))))
+                (.mkdirs))
         nstory (count (filter #(= :top-stories (:segment %)) segments))
+        nlang  (get-in spec [:narration :lang] lang)
         _     (when (System/getenv "ANIMEKA_URL")
                 (try (animeka/mirror-episode! (System/getenv "ANIMEKA_URL")
                                               channel episode spec)
@@ -218,8 +245,10 @@
                   [w h])
         frames
         (vec (map-indexed
-              (fn [i {:keys [segment duration-s lines caption]}]
-                (let [story-i (inc (count (filter #(= :top-stories (:segment %))
+              (fn [i {:keys [segment duration-s lines caption] :as seg}]
+                (let [audio (when narrator
+                              (ports/-narrate narrator channel seg nlang))
+                      story-i (inc (count (filter #(= :top-stories (:segment %))
                                                   (take i segments))))
                       img  (draw-slide {:w w :h h :brand brand :date date
                                         :accent accent
@@ -232,23 +261,31 @@
                       f    (io/file dir (format "slide-%02d.png" i))]
                   (ImageIO/write img "png" f)
                   ;; concat demuxer は ffconcat の場所基準で解決するので絶対パス
-                  {:path (.getAbsolutePath f) :duration-s (or duration-s 10)}))
+                  {:path (.getAbsolutePath f)
+                   :duration-s (narrated-duration audio duration-s)
+                   :audio-path (:path audio)
+                   :audio-cid  (:cid audio)}))
               segments))
         video-path (when (seq frames) (mux! dir frames (or fps 30) "episode.mp4"))
         thumb      (first frames)]
     {:video     (when video-path
                   {:cid (sha256-cid (io/file video-path)) :path video-path
-                   :type :video})
+                   :type :video :lang nlang})
      :thumbnail (when thumb
                   {:cid (sha256-cid (io/file (:path thumb))) :path (:path thumb)
                    :type :thumbnail})
+     :narration (when (some :audio-cid frames)
+                  {:lang nlang
+                   :voice (get-in spec [:narration :voice])
+                   :cids (vec (keep :audio-cid frames))})
      :frames    (mapv :path frames)}))
 
-(defrecord SlideRenderer [out-dir]
+(defrecord SlideRenderer [out-dir narrator]
   ports/Renderer
   (-render [_ channel episode render-spec]
-    (render-episode! channel episode render-spec out-dir)))
+    (render-episode! channel episode render-spec out-dir narrator)))
 
 (defn slide-renderer
   ([] (slide-renderer "out"))
-  ([out-dir] (->SlideRenderer out-dir)))
+  ([out-dir] (->SlideRenderer out-dir nil))
+  ([out-dir narrator] (->SlideRenderer out-dir narrator)))

@@ -120,6 +120,48 @@
       (is (= :hold (get-in res [:state :disposition])))
       (is (some #{:no-actuation} (-> (store/ledger s) last :basis))))))
 
+(deftest unregistered-voice-is-held
+  (testing "channel に登録の無い voice でのナレーション（無断クローン）→ hold"
+    (let [[s _] (fresh)
+          ep "ep-vc"
+          base (op/build s)
+          _ (run base "vc-r" {:op :rundown/compose :episode ep
+                              :channel "ch-gftd-ai-news" :date "2026-07-02"} 3)
+          _ (run base "vc-s" {:op :script/draft :episode ep} 3)
+          bad (reify anchorllm/Advisor
+                (-advise [_ _ _]
+                  {:render-spec {:lang "ja"
+                                 :narration {:lang "ja" :voice "cloned-someone"}
+                                 :segments []}
+                   :summary "x" :rationale "x" :cites []
+                   :effect :asset :confidence 0.9}))
+          a2 (op/build s {:advisor bad})
+          res (run a2 "vc" {:op :video/produce :episode ep} 3)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:voice-consent} (-> (store/ledger s) last :basis)))
+      (is (nil? (:video (store/episode s ep)))))))
+
+(deftest unsupported-lang-is-held
+  (testing "channel :langs に無い言語の render → hold"
+    (let [[s actor] (fresh)
+          ep "ep-fr"
+          _ (run actor "fr-r" {:op :rundown/compose :episode ep
+                               :channel "ch-gftd-ai-news" :date "2026-07-02"} 3)
+          _ (run actor "fr-s" {:op :script/draft :episode ep} 3)
+          res (run actor "fr" {:op :video/produce :episode ep :lang "fr"} 3)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:unsupported-lang} (-> (store/ledger s) last :basis))))))
+
+(deftest multilingual-videos-accumulate
+  (testing ":video/produce :lang \"en\" は :videos に per-lang で積まれる"
+    (let [[s actor] (fresh)
+          ep "ep-ml"]
+      (to-published actor s ep)                      ; ja render 済み
+      (run actor "ml-en" {:op :video/produce :episode ep :lang "en"} 3)
+      (let [e (store/episode s ep)]
+        (is (= #{"ja" "en"} (set (keys (:videos e)))))
+        (is (= :rendered (:status e)))))))
+
 (deftest render-failure-holds
   (testing "Renderer が失敗したら asset は記録されず hold"
     (let [[s actor] (fresh {:renderer (ports/failing-renderer)})

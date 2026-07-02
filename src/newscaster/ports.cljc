@@ -2,8 +2,12 @@
   "注入境界（swap）— actor コアが依存する外界は全て protocol port:
 
     NewsFeed  — A 層（ai-gftd-news）からの記事取得。mock ‖ kotoba XRPC。
+    Narrator  — セグメント原稿 → ナレーション音声。mock（nil = 無音）‖
+                newscaster.tts（open-weight TTS gateway: TADA / Kokoro、
+                ADR-2607021030）。
     Renderer  — render-spec → 動画 asset。mock ‖ newscaster.render
-                （Java2D 16:9 news-card + ffmpeg。ANIMEKA_URL で animeka へ構造記録）。
+                （Java2D 16:9 news-card + Narrator 音声 + ffmpeg。
+                ANIMEKA_URL で animeka へ構造記録）。
     Publisher — 承認済み episode の外部公開。mock ‖ newscaster.youtube
                 （YouTube Data API v3）。**publish op の人間承認後にのみ呼ばれる。**
 
@@ -11,6 +15,10 @@
 
 (defprotocol NewsFeed
   (-fetch-articles [feed opts] "→ [article ..]（A 層 article の写像）"))
+
+(defprotocol Narrator
+  (-narrate [narrator channel segment lang]
+    "→ {:path :duration-s :cid :voice} | nil（音声なし = 無音セグメント）"))
 
 (defprotocol Renderer
   (-render [renderer channel episode render-spec]
@@ -26,6 +34,20 @@
   "固定の記事列を返す NewsFeed。"
   [articles]
   (reify NewsFeed (-fetch-articles [_ _opts] (vec articles))))
+
+(defn mock-narrator
+  "音声なし（nil）— 無音の従来挙動。"
+  []
+  (reify Narrator (-narrate [_ _ch _seg _lang] nil)))
+
+(defn fixed-narrator
+  "決定的な尺だけ返す Narrator（尺同期のテスト用。実ファイルは作らない）。"
+  [duration-s]
+  (reify Narrator
+    (-narrate [_ ch _seg lang]
+      {:duration-s duration-s
+       :voice (get-in ch [:persona :voices lang :voice])
+       :cid (str "cid-audio-" lang "-" duration-s)})))
 
 (defn mock-renderer []
   (reify Renderer

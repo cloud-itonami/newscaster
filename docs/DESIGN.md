@@ -47,6 +47,8 @@ HARD（人間でも上書き不可）:
 | `:rights-blocked` | rightsPolicy が publish 不可（broadcast/transcript-only/unknown） |
 | `:missing-disclosure` | publish-meta に `:disclosure :ai-generated` が無い |
 | `:no-actuation` | effect が :proposal/:asset 以外（直接公開の試み） |
+| `:voice-consent` | channel 未登録 voice でのナレーション（無断クローン排除、ADR-2607021030） |
+| `:unsupported-lang` | channel `:langs` に無い言語の render |
 | `:no-channel` `:empty-rundown` `:missing-rundown` `:empty-script` `:missing-script` `:not-rendered` | 工程整合性 |
 
 SOFT: confidence < 0.6 → escalate。`:episode/publish` は外部公開 = 常に
@@ -69,13 +71,22 @@ ground datoms（article/channel/episode/asset）が canonical。append-only の
 ai-gftd-news (A層)     …一次収集。art-* datom graph・score・rightsPolicy
       │ NewsFeed port（写像 ingest）
 ai-gftd-newscaster (B層・本 repo)
+      │ Narrator port（ADR-2607021030）
+      ├─ scripts/tts_server.py … open-weight TTS gateway（POST /tts → WAV）
+      │    BACKEND=tada   … HumeAI/tada-3b-ml（Hume 純正 open weights、ja 含む）
+      │    BACKEND=kokoro … Kokoro-82M（Apache、ローカル/CI）
       │ Renderer port
-      ├─ newscaster.render  … Java2D 16:9 news-card + ffmpeg（今日動く経路）
+      ├─ newscaster.render  … Java2D news-card + 音声実尺で尺同期 + ffmpeg
       ├─ ai-gftd-animeka    … cut 構造ミラー（ANIMEKA_URL）。adapter 結線後に実レンダ昇格
       └─ kami-engine        … kami.mangaka.{render,text,page}（2D）/ 将来 kami-cine encode
       │ Publisher port（人間承認後のみ）
       └─ YouTube Data API v3（containsSyntheticMedia 開示）
 ```
+
+多言語（ADR-2607021030）: channel `:langs` + per-lang voice registry。script は
+主言語 + `:i18n {lang {:lines :caption}}`（kami.mangaka.text の locale map 流儀）。
+cites はセグメント構造側にあるため**全 locale で構造的に同一** = 翻訳で出典が
+すり替わらない。`:video/produce :lang` → per-lang mp4（episode `:videos {lang v}`）。
 
 ## 6. 段階導入（Phase 0→3）
 

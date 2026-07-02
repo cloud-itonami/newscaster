@@ -3,5 +3,7 @@
 .lsp/
 out/
 .newscaster/
+.venv-tts/
+voices/
 *.class
 .DS_Store

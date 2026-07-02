@@ -15,11 +15,16 @@
    :title "GFTD AI News"
    :description "AI の一次情報だけを、出典つきで毎日 3 分に編成する AI ニュースチャンネル"
    :lang "ja"
+   :langs ["ja" "en"]                                ; 主言語が先頭（多言語 render）
    :cadence :daily
    :target-duration-s 180
    :persona {:anchor "Yuzu"
              :tone "落ち着いた・正確・必ず出典を読む"
-             :disclosure :ai-generated}
+             :disclosure :ai-generated
+             ;; 登録済み voice のみ Narrator に渡せる（governor :voice-consent、
+             ;; ADR-2607021030）。value は TTS backend の voice id / reference 名。
+             :voices {"ja" {:voice "jf_alpha"}
+                      "en" {:voice "af_heart"}}}
    :format [{:segment :cold-open      :duration-s 15 :items 1 :style :headline}
             {:segment :top-stories    :duration-s 45 :items 3 :style :story}
             {:segment :one-more-thing :duration-s 30 :items 1 :style :light}
@@ -50,12 +55,18 @@
                  (repeat items {:segment segment :style style :duration-s duration-s}))
                format)))
 
+(defn primary-lang [{:keys [lang langs]}]
+  (or (first langs) lang "ja"))
+
 (defn validate
   "チャンネル設計の妥当性。violations の vector（空 = OK）。"
-  [{:keys [id title lang format youtube] :as _ch}]
+  [{:keys [id title lang langs format youtube persona] :as _ch}]
   (cond-> []
     (not (string? id))    (conj {:rule :missing-id})
     (not (string? title)) (conj {:rule :missing-title})
     (not (string? lang))  (conj {:rule :missing-lang})
     (empty? format)       (conj {:rule :empty-format})
-    (not= :ai-generated (:disclosure youtube)) (conj {:rule :missing-disclosure})))
+    (not= :ai-generated (:disclosure youtube)) (conj {:rule :missing-disclosure})
+    ;; ナレーションする言語には登録 voice が要る（governor :voice-consent の前提）
+    (some #(nil? (get-in persona [:voices %])) (or langs [lang]))
+    (conj {:rule :missing-voice})))

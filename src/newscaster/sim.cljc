@@ -19,7 +19,8 @@
             [newscaster.channel :as channel]
             [newscaster.operation :as op]
             [newscaster.store :as store]
-            #?(:clj [newscaster.render :as render])))
+            #?@(:clj [[newscaster.render :as render]
+                      [newscaster.tts :as tts]])))
 
 (defn- line [& xs] (println (apply str xs)))
 
@@ -44,8 +45,13 @@
   (let [st    (store/seed-db)
         ep    "ep-20260702"
         ch-id "ch-gftd-ai-news"
-        actor (op/build st #?(:clj  {:renderer (render/slide-renderer "out")}
+        #?@(:clj [narrator (tts/http-narrator)])
+        actor (op/build st #?(:clj  {:renderer (render/slide-renderer
+                                                "out" narrator)}
                               :cljs {}))]
+    #?(:clj (line (if narrator
+                    "TTS_URL 検出 — open-weight ナレーションつきで生成します"
+                    "TTS_URL 未設定 — 無音で生成します（scripts/tts_server.py 参照）")))
 
     (line "── チャンネル設計（data as channel）──")
     (let [ch (store/channel-of st ch-id)]
@@ -58,7 +64,9 @@
                        :value {:id "art-jp-ai-strategy"
                                :url "https://www.cao.go.jp/ai-strategy-2026"
                                :title "政府、AI 戦略 2026 改訂版を公表"
+                               :title-en "Japan publishes the revised AI Strategy 2026"
                                :summary "国産基盤モデルの評価基盤整備と公共調達指針を追加。"
+                               :summary-en "Adds an evaluation platform for domestic foundation models and public-procurement guidance."
                                :source-id "src-cao" :source-name "内閣府"
                                :source-type "official" :rights-policy "gov-open"
                                :lang "ja" :published-at "2026-07-02"
@@ -83,7 +91,7 @@
       (doseq [l lines] (line "    " l))
       (line "    ── " caption))
 
-    (line "\n── video/produce: SlideRenderer（Java2D news-card + ffmpeg）──")
+    (line "\n── video/produce (ja): SlideRenderer（news-card + ナレーション + ffmpeg）──")
     (drive actor "v1" {:op :video/produce :episode ep} 3 true)
     (let [{:keys [video thumbnail]} (store/episode st ep)]
       (line "  video: " (or (:path video) "(ffmpeg 不在 — frames のみ)"))
@@ -93,6 +101,12 @@
     (line "\n── episode/publish: 外部公開は常に人間の editorial sign-off ──")
     (drive actor "p1" {:op :episode/publish :episode ep} 3 true)
     (line "  publication: " (pr-str (:publication (store/episode st ep))))
+
+    (line "\n── video/produce (en): 多言語 — 同じ script の :i18n から英語版 ──")
+    (drive actor "v-en" {:op :video/produce :episode ep :lang "en"} 3 true)
+    (let [e (store/episode st ep)]
+      (line "  videos: " (pr-str (into {} (map (fn [[k v]] [k (:path v)])
+                                               (:videos e))))))
 
     (line "\n── 段階導入: rundown/compose を phase 0 (ingest-only) で ──")
     (drive actor "p0" {:op :rundown/compose :episode "ep-shadow" :channel ch-id

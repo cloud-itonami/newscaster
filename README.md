@@ -66,7 +66,8 @@ from it.
 | Store | `MemStore` | `DatomicStore`（langchain.db `:db-api` → 実 Datomic / kotoba pod） |
 | Advisor | `mock-advisor`（rights-aware）/ `careless-advisor`（封じ込めデモ用） | `llm-advisor`（langchain.model） |
 | NewsFeed | `mock-feed` | A 層 kotoba XRPC（follow-up） |
-| Renderer | `mock-renderer` | `newscaster.render/slide-renderer` — Java2D 16:9 news-card + ffmpeg → mp4。`IMAGEGEN_URL` で背景生成、`ANIMEKA_URL` で ai-gftd-animeka に cut 構造をミラー |
+| Narrator | `mock-narrator`（無音） | `newscaster.tts/http-narrator` — open-weight TTS gateway（`TTS_URL`）。backend: **TADA**（`HumeAI/tada-3b-ml` = Hume 純正 open weights、ja 含む多言語 = hume quality）‖ **Kokoro**（82M Apache、ローカル/CI 用）。ADR-2607021030 |
+| Renderer | `mock-renderer` | `newscaster.render/slide-renderer` — Java2D 16:9 news-card + Narrator 音声（尺は音声実尺で同期）+ ffmpeg → mp4。`IMAGEGEN_URL` で背景生成、`ANIMEKA_URL` で ai-gftd-animeka に cut 構造をミラー |
 | Publisher | `mock-publisher` | `newscaster.youtube/publisher` — YouTube Data API v3（`YT_ACCESS_TOKEN`、承認後のみ） |
 
 ## Run
@@ -75,6 +76,16 @@ from it.
 clojure -M:dev:run     # design channel → generate today's AI news → render mp4 (out/) → human sign-off → publish (mock)
 clojure -M:dev:test    # editorial contract + store parity + advisor + channel + render smoke
 clojure -M:lint        # clj-kondo (errors fail)
+
+# ナレーションつき（open-weight TTS gateway。ADR-2607021030）
+# ⚠ Python 3.12 系で（3.14 は spacy が未 build）。ja は unidic、en は spacy モデルが要る
+uv venv --python python3.12 .venv-tts
+uv pip install --python .venv-tts/bin/python kokoro soundfile "misaki[ja]" \
+  "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+.venv-tts/bin/python -m unidic download
+BACKEND=kokoro PORT=8123 .venv-tts/bin/python scripts/tts_server.py &   # 軽量 backend
+TTS_URL=http://127.0.0.1:8123 clojure -M:dev:run                        # ja + en 音声つき mp4
+# hume quality: BACKEND=tada（HumeAI/tada-3b-ml、bf16 ~9GB — GPU pod 推奨）
 ```
 
 The demo ingests an article, shows a **careless advisor being held on
@@ -86,24 +97,27 @@ sign-off, publishes via the mock publisher, and prints the append-only 放送台
 ## Layout
 
 ```
-src/newscaster/channel.cljc    チャンネル設計 = data（編成表/ペルソナ/visual/YouTube 既定）
+src/newscaster/channel.cljc    チャンネル設計 = data（編成表/ペルソナ/:langs/voice registry）
 src/newscaster/store.cljc      Store protocol + MemStore ‖ DatomicStore + 放送台帳
-src/newscaster/anchorllm.cljc  anchor-LLM (sealed): mock ‖ careless ‖ llm-advisor
-src/newscaster/governor.cljc   EditorialGovernor（放送考査; HARD/SOFT invariants）
+src/newscaster/anchorllm.cljc  anchor-LLM (sealed): mock ‖ careless ‖ llm-advisor（:i18n 原稿）
+src/newscaster/governor.cljc   EditorialGovernor（+ :voice-consent / :unsupported-lang）
 src/newscaster/phase.cljc      Phase 0→3（publish は決して auto にならない）
-src/newscaster/ports.cljc      NewsFeed / Renderer / Publisher protocols + mocks
-src/newscaster/operation.cljc  BroadcastActor StateGraph (ingest ‖ produce)
-src/newscaster/render.clj      SlideRenderer: Java2D news-card + ffmpeg（+IMAGEGEN/ANIMEKA）
+src/newscaster/ports.cljc      NewsFeed / Narrator / Renderer / Publisher protocols + mocks
+src/newscaster/operation.cljc  BroadcastActor StateGraph (ingest ‖ produce、:videos per-lang)
+src/newscaster/render.clj      SlideRenderer: news-card + ナレーション尺同期 + ffmpeg
+src/newscaster/tts.clj         HttpNarrator: open-weight TTS gateway driver（WAV 実尺/cid）
 src/newscaster/animeka.clj     ai-gftd-animeka XRPC ミラー（EDN body）
 src/newscaster/youtube.clj     YouTube Data API v3 publisher（承認後のみ）
-src/newscaster/sim.cljc        demo driver
+src/newscaster/sim.cljc        demo driver（ja + en の 2 言語 render）
+scripts/tts_server.py          TTS gateway サーバ（BACKEND=kokoro|tada）
 ```
 
 ## Follow-ups
 
 - A 層 NewsFeed の kotoba XRPC 実装（`news.gftd.ai` の `qListArticles` 経由）。
-- animeka の ComfyUI / TTS / ffmpeg adapter が結線され次第、SlideRenderer →
+- animeka の ComfyUI / ffmpeg adapter が結線され次第、SlideRenderer →
   `cutRunner` 実レンダへ昇格。3D スタジオは `kami.backend.host`（現状スタブ）
   or kami-cine `encode` 契約（pod 側）。
-- TTS ナレーション（現状は無音の字幕動画）と多言語（`kami.mangaka.text` の
-  locale map）。
+- TADA の persona reference 音源整備（演技指示相当は reference audio 依存）と
+  GPU pod での BACKEND=tada 常用化。YouTube per-locale publication /
+  multi-audio track（API allowlist 待ち）。

@@ -143,22 +143,30 @@
                     {:audit [f]}))
 
               :render
-              (let [ep  (store/episode store eid)
-                    ch  (store/channel-of store (:channel ep))
-                    res (ports/-render renderer ch ep
-                                       (get-in record [:value :render-spec]))]
+              (let [ep   (store/episode store eid)
+                    ch   (store/channel-of store (:channel ep))
+                    spec (get-in record [:value :render-spec])
+                    lang (or (:lang spec) (:lang ch) "ja")
+                    res  (ports/-render renderer ch ep spec)]
                 (if (:video res)
                   (do (store/record-datom! store {:kind :asset :id eid
                                                   :value (:video res)})
                       (when (:thumbnail res)
                         (store/record-datom! store {:kind :asset :id eid
                                                     :value (:thumbnail res)}))
-                      (store/record-datom! store {:kind :episode :id eid
-                                                  :value {:video (:video res)
-                                                          :thumbnail (:thumbnail res)
-                                                          :status :rendered}})
+                      ;; ナレーション音声も cid で台帳に載る asset（ADR-2607021030）
+                      (when (:narration res)
+                        (store/record-datom! store
+                          {:kind :asset :id eid
+                           :value (assoc (:narration res) :type :narration)}))
+                      (store/record-datom! store
+                        {:kind :episode :id eid
+                         :value {:video (:video res)
+                                 :videos (assoc (:videos ep) lang (:video res))
+                                 :thumbnail (:thumbnail res)
+                                 :status :rendered}})
                       (let [f {:t :rendered :op (:op request) :episode eid
-                               :disposition :commit
+                               :disposition :commit :lang lang
                                :basis (:cid (:video res))}]
                         (store/append-ledger! store f)
                         {:audit [f]}))

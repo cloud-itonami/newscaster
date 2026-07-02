@@ -94,9 +94,25 @@
               :detail (str "rundown 外の記事を引用: " (vec stray))}))
      (citation-violations st cited))))
 
-(defn- video-violations [st {:keys [episode]} _proposal]
-  (when (empty? (:script (store/episode st episode)))
-    [{:rule :missing-script :detail "committed script が無い"}]))
+(defn- video-violations [st {:keys [episode]} proposal]
+  (let [ep     (store/episode st episode)
+        ch     (store/channel-of st (:channel ep))
+        spec   (:render-spec proposal)
+        lang   (or (:lang spec) (get-in spec [:narration :lang]))
+        voice  (get-in spec [:narration :voice])
+        langs  (set (or (:langs ch) [(:lang ch)]))
+        voices (set (keep :voice (vals (get-in ch [:persona :voices]))))]
+    (cond-> []
+      (empty? (:script ep))
+      (conj {:rule :missing-script :detail "committed script が無い"})
+      ;; ADR-2607021030: 未対応言語の render を型で止める
+      (and ch lang (not (contains? langs lang)))
+      (conj {:rule :unsupported-lang
+             :detail (str "channel 未対応の言語: " lang " (対応: " (vec langs) ")")})
+      ;; ADR-2607021030: narration voice は channel 登録済みのみ（無断クローン排除）
+      (and ch voice (not (contains? voices voice)))
+      (conj {:rule :voice-consent
+             :detail (str "未登録 voice でのナレーション: " voice)}))))
 
 (defn- publish-violations [st {:keys [episode]} proposal]
   (let [ep (store/episode st episode)]
