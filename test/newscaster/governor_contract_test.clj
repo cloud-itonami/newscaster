@@ -100,6 +100,35 @@
         (is (= ["post-robotaxi"]
                (get-in (store/episode s "ep-t2") [:rundown 0 :article-ids])))))))
 
+(deftest missing-phase-context-does-not-grant-max-autonomy
+  ;; default-phase is the fallback both when :phase is entirely absent
+  ;; from context (newscaster.operation) and when an unrecognized phase
+  ;; number is passed (phase/gate). It used to be 3 -- the single most
+  ;; permissive tier, where rundown/script/video all auto-commit -- so a
+  ;; caller that simply forgot to set :phase silently got MAXIMUM
+  ;; autonomy instead of the safe "start narrow" default this namespace's
+  ;; own docstring promises.
+  (testing "omitting :phase from context still requires human approval on a clean rundown"
+    (let [post {:id "post-robotaxi" :title "t" :summary "s"
+               :url "at://did:web:aozora.gftd.ai:actor:robotaxi/x"
+               :source-name "robotaxi" :source-type "social"
+               :actor-did "did:web:aozora.gftd.ai:actor:robotaxi"
+               :rights-policy "actor-original" :priority 99}
+          ok (reify anchorllm/Advisor
+               (-advise [_ _ _]
+                 {:rundown [{:segment :fleet-pulse :style :social :duration-s 20
+                             :article-ids ["post-robotaxi"]}]
+                  :summary "x" :rationale "x" :cites ["post-robotaxi"]
+                  :effect :proposal :confidence 0.9}))
+          [s actor] (fresh {:advisor ok})
+          _   (run actor "mp-i" {:op :article/ingest :article "post-robotaxi" :value post} 3)
+          req {:op :rundown/compose :episode "ep-mp"
+               :channel "ch-gftd-ai-news" :date "2026-07-02"}
+          res (g/run* actor {:request req :context {}} {:thread-id "mp"})]
+      (is (not= :commit (get-in res [:state :disposition]))
+          "a clean rundown must not auto-commit when :phase is unset")
+      (is (nil? (:rundown (store/episode s "ep-mp"))) "SSoT untouched without explicit phase"))))
+
 (deftest script-without-rundown-is-held
   (let [[s actor] (fresh)
         res (run actor "sr" {:op :script/draft :episode "ep-none"} 3)]
