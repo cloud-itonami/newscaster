@@ -20,7 +20,24 @@
    3 {:label "supervised"    :produce produce-ops :auto #{:rundown/compose :script/draft
                                                           :video/produce}}})
 
-(def default-phase 3)
+(def default-phase
+  "The phase used when `context` carries no :phase at all
+  (newscaster.operation: (:phase context phase/default-phase)), AND the
+  fallback `gate` itself uses for an unrecognized phase NUMBER
+  (`(get phases phase (get phases default-phase))`). This is directly
+  reachable by any ordinary caller that simply omits :phase -- not just
+  malformed/malicious input -- so it must be the MOST CONSERVATIVE
+  phase, never the most permissive: 'can only add caution' (this
+  namespace's own docstring) has to hold for a MISSING phase too, not
+  only an explicitly-set low one. This was 3 (supervised, the single
+  most permissive tier -- video/produce can auto-commit) until a live
+  check confirmed a caller who forgets :phase silently got maximum
+  autonomy instead of the safe default. Root-caused to the shared
+  talent.phase template this family is ported from (also fixed there,
+  gftd-talent-actor); 1 (assisted) matches the sibling ports' own choice
+  (tsumugu.phase / shiropico.phase default-phase 1) -- produce is
+  allowed but every one still needs human approval."
+  1)
 
 (defn record-op? [op] (contains? record-ops op))
 
