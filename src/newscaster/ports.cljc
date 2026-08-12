@@ -40,7 +40,12 @@
 
 (defprotocol Publisher
   (-publish [publisher channel episode publish-meta]
-    "→ {:video-id .. :url ..} | nil（失敗）"))
+    "→ {:video-id .. :url ..}（公開された）
+     | {:outcome :not-attempted | :rejected}（確定的に何も公開されていない）
+     | {:outcome :indeterminate ..}（公開されたか **わからない**）
+
+    nil も :indeterminate として扱われる — 「わからない」を「失敗した」と
+    記録しないため。実装は可能なかぎり :outcome を明示すること。"))
 
 ;; ───────────────────────── deterministic mocks ─────────────────────────
 

@@ -175,25 +175,82 @@
                     (store/append-ledger! store f)
                     {:disposition :hold :audit [f]})))
 
+              ;; 公開は「取り消せない外部効果」なので、順序は
+              ;;   意図を記録 → 効果 → 結果を記録
+              ;; とする。効果を先に出すと、その間に落ちた実行が **誰にも名指し
+              ;; できない動画** を残し、次の実行がもう 1 本作る。
               :publication
-              (let [ep   (store/episode store eid)
-                    ch   (store/channel-of store (:channel ep))
-                    meta (get-in record [:value :publish-meta])
-                    res  (ports/-publish publisher ch ep meta)]
-                (if res
-                  (do (store/record-datom! store
-                        {:kind :episode :id eid
-                         :value {:publication (assoc res :approved-by
-                                                     (get-in record [:value :approved-by]))
-                                 :status :published}})
-                      (let [f {:t :published :op (:op request) :episode eid
-                               :disposition :commit :basis (:url res)}]
-                        (store/append-ledger! store f)
-                        {:audit [f]}))
-                  (let [f {:t :publish-failed :op (:op request) :episode eid
-                           :disposition :hold :basis [:publisher-error]}]
+              (let [ep       (store/episode store eid)
+                    existing (:publication ep)
+                    attempt  (:publish-attempt ep)]
+                (cond
+                  ;; すでに公開済み。retry は 2 本目を作ってはならない。
+                  (:video-id existing)
+                  (let [f {:t :publish-noop :op (:op request) :episode eid
+                           :disposition :commit
+                           :basis [:already-published (:video-id existing)]}]
                     (store/append-ledger! store f)
-                    {:disposition :hold :audit [f]})))))))
+                    {:audit [f]})
+
+                  ;; 前回の実行が「効果を出した後・記録の前」に落ちている。
+                  ;; 動画が在るのか無いのかはここからは分からないので、
+                  ;; **黙って再送しない** — 人間がチャンネルを見て確定させる。
+                  (and attempt (nil? existing))
+                  (let [f {:t :publish-attempt-unresolved :op (:op request)
+                           :episode eid :disposition :hold
+                           :basis [:prior-attempt-unresolved (:by attempt)]}]
+                    (store/append-ledger! store f)
+                    {:disposition :hold :audit [f]})
+
+                  :else
+                  (let [ch   (store/channel-of store (:channel ep))
+                        meta (get-in record [:value :publish-meta])
+                        ;; 効果より先に意図を durable に置く。これが在れば
+                        ;; 途中で落ちても「送ったかもしれない」と名指しできる。
+                        _    (store/record-datom! store
+                               {:kind :episode :id eid
+                                :value {:publish-attempt
+                                        {:op (:op request)
+                                         :by (get-in record [:value :approved-by])}}})
+                        _    (store/append-ledger!
+                               store {:t :publish-attempted :op (:op request)
+                                      :episode eid :disposition :commit
+                                      :basis [:attempt-recorded]})
+                        res  (ports/-publish publisher ch ep meta)]
+                    (cond
+                      (:video-id res)
+                      (do (store/record-datom! store
+                            {:kind :episode :id eid
+                             :value {:publication (assoc res :approved-by
+                                                         (get-in record [:value :approved-by]))
+                                     :publish-attempt nil
+                                     :status :published}})
+                          (let [f {:t :published :op (:op request) :episode eid
+                                   :disposition :commit :basis (:url res)}]
+                            (store/append-ledger! store f)
+                            {:audit [f]}))
+
+                      ;; 確定的に何も公開されていない場合だけ :publish-failed。
+                      ;; 意図の印も畳んでよい（再試行は安全）。
+                      (#{:not-attempted :rejected} (:outcome res))
+                      (do (store/record-datom! store
+                            {:kind :episode :id eid :value {:publish-attempt nil}})
+                          (let [f {:t :publish-failed :op (:op request) :episode eid
+                                   :disposition :hold
+                                   :basis [:publisher-error (:outcome res)
+                                           (or (:reason res) (:status res))]}]
+                            (store/append-ledger! store f)
+                            {:disposition :hold :audit [f]}))
+
+                      ;; 公開されたか分からない（5xx・切断・id 無しの 2xx・nil）。
+                      ;; 「失敗した」と書くのは嘘なので書かない。印は残す。
+                      :else
+                      (let [f {:t :publish-indeterminate :op (:op request)
+                               :episode eid :disposition :hold
+                               :basis [:publisher-indeterminate
+                                       (or (:reason res) (:status res) :nil-response)]}]
+                        (store/append-ledger! store f)
+                        {:disposition :hold :audit [f]})))))))))
 
       (g/add-node :hold
         (fn [{:keys [audit]}]
