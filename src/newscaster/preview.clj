@@ -7,7 +7,7 @@
   内容は store の構造化データから直接組む: channel 設計 / rundown+cites /
   原稿（ja·en）/ per-lang videos / 放送台帳。"
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [liquid-glass.components :as lg]
             [liquid-glass.style :as ls]
             [newscaster.store :as store]
@@ -127,7 +127,7 @@ video{width:100%;border-radius:14px;display:block;}
        [:section [:h2 "episode videos"]
         [:div {:class "cols"}
          (for [[lang v] (sort-by key (:videos ep))]
-           (video-panel (if (= lang "ja") "日本語版" (str/upper-case lang))
+           (video-panel (if (= lang "ja") "日本語版" (str/upper lang))
                         episode-id lang v))]]
        [:section [:h2 "news-card frames（ja）"]
         (lg/panel

@@ -11,7 +11,7 @@
   sha256 cid つきで返す（放送台帳の provenance）。"
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [newscaster.ports :as ports])
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers

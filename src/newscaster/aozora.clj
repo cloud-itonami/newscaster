@@ -19,7 +19,7 @@
   copyright question the way there is for A 層 press articles; the trust
   question is authenticity (roster), not licensing."
   (:require [clojure.data.json :as json]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [newscaster.ports :as ports])
   (:import [java.net URI URLEncoder]
            [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]

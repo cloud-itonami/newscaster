@@ -15,7 +15,7 @@
   公開したかの不変の系譜（出典トレーサビリティ/データ主権の核）。"
   (:require #?(:clj  [clojure.edn :as edn]
                :cljs [cljs.reader :as edn])
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [langchain.db :as d]
             [newscaster.channel :as channel]))
 
