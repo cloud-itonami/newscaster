@@ -21,7 +21,7 @@
   kami-cine（gftd:kami-cine encode 契約）/ animeka の ComfyUI・TTS adapter が
   実装され次第、この Renderer を差し替えて昇格する（ADR-2607020910）。"
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [liquid-glass.tokens :as lgt]
             [newscaster.animeka :as animeka]
             [newscaster.ports :as ports])
@@ -295,7 +295,7 @@
     :top-stories    (str "TOP STORIES " i "/" n)
     :one-more-thing "ONE MORE THING"
     :outro          "CREDITS"
-    (str/upper-case (name segment))))
+    (str/upper (name segment))))
 
 (def ^:private min-segment-s 3.0)
 
