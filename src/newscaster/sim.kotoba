@@ -16,7 +16,7 @@
     ledger    放送台帳（append-only）
     parity    DatomicStore でも同一契約
 
-  Run: clojure -M:dev:run"
+  Run: kbb -M:dev:run"
   (:require [langgraph.graph :as g]
             [newscaster.anchorllm :as anchorllm]
             [newscaster.channel :as channel]

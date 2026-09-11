@@ -92,9 +92,9 @@ rundown / script / render-spec / publish-meta from it.
 ## Run
 
 ```bash
-clojure -M:dev:run     # design channel → generate today's AI news → render mp4 (out/) → human sign-off → publish (mock)
-clojure -M:dev:test    # editorial contract + store parity + advisor + channel + render smoke
-clojure -M:lint        # clj-kondo (errors fail)
+kbb -M:dev:run     # design channel → generate today's AI news → render mp4 (out/) → human sign-off → publish (mock)
+kbb -M:dev:test    # editorial contract + store parity + advisor + channel + render smoke
+kbb -M:lint        # clj-kondo (errors fail)
 
 # ナレーションつき（open-weight TTS gateway。ADR-2607021030）
 # ⚠ Python 3.12 系で（3.14 は spacy が未 build）。ja は unidic、en は spacy モデルが要る
@@ -103,7 +103,7 @@ uv pip install --python .venv-tts/bin/python kokoro soundfile "misaki[ja]" \
   "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 .venv-tts/bin/python -m unidic download
 BACKEND=kokoro PORT=8123 .venv-tts/bin/python scripts/tts_server.py &   # 軽量 backend
-TTS_URL=http://127.0.0.1:8123 clojure -M:dev:run                        # ja + en 音声つき mp4
+TTS_URL=http://127.0.0.1:8123 kbb -M:dev:run                        # ja + en 音声つき mp4
 # hume quality: BACKEND=tada（HumeAI/tada-3b-ml、bf16 ~9GB — GPU pod 推奨）
 ```
 
